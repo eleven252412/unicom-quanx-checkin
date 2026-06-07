@@ -3,7 +3,7 @@
  *
  * 模式：
  * 1) 抓取模式：打开联通 App/H5 登录后页面，自动保存签到所需 cookie
- * 2) 定时模式：读取本地 cookie，执行签到，并补做当前可直连完成的附加任务
+ * 2) 定时模式：读取本地 cookie，调用当前可用签到接口执行签到
  */
 
 const CONFIG = {
@@ -12,15 +12,10 @@ const CONFIG = {
   notifyTsKey: 'china_unicom_notify_ts_v1',
   requestTimeout: 20000,
   notifyCooldownMs: 15000,
+  signUrl: 'https://activity.10010.com/sixPalaceGridTurntableLottery/signin/daySign',
   hosts: ['m.client.10010.com', 'img.client.10010.com', 'activity.10010.com'],
   userAgent:
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 unicom{version:iphone_c@11.0602}',
-  api: {
-    sign: 'https://activity.10010.com/sixPalaceGridTurntableLottery/signin/daySign',
-    taskInfo: 'https://act.10010.com/SigninApp/doTask/getTaskInfo',
-    finishVideo: 'https://act.10010.com/SigninApp/doTask/finishVideo',
-    getPrize: 'https://act.10010.com/SigninApp/doTask/getPrize'
-  }
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 unicom{version:iphone_c@11.0602}'
 };
 
 function now() { return Date.now(); }
@@ -238,70 +233,6 @@ async function runSign(headers, account) {
   };
 }
 
-async function getTaskInfo(headers, account) {
-  const resp = await postJson(CONFIG.api.taskInfo, headers);
-  updateCookieIfNeeded(account, resp.cookie, CONFIG.api.taskInfo);
-  headers.Cookie = account.cookie;
-
-  if (resp.statusCode < 200 || resp.statusCode >= 400 || !resp.data) {
-    return {
-      ok: false,
-      lines: [`附加任务：查询失败 ${resp.statusCode}`]
-    };
-  }
-
-  const taskList = resp.data && resp.data.data && Array.isArray(resp.data.data.taskList)
-    ? resp.data.data.taskList
-    : [];
-  const actInfo = resp.data && resp.data.data && resp.data.data.taskInfo
-    ? resp.data.data.taskInfo
-    : {};
-  const lines = [];
-
-  if (taskList.length) {
-    taskList.forEach((item) => {
-      lines.push(`任务状态 | ${item.name || '未知任务'} | ${item.btn || item.status || '未知'}`);
-    });
-  }
-  if (actInfo && actInfo.actDiscribe) {
-    lines.push(`活动说明 | ${shortText(actInfo.actDiscribe)}`);
-  }
-
-  return { ok: true, taskList, actInfo, lines };
-}
-
-async function runVideoTask(headers, account, taskList) {
-  const task = (taskList || []).find((item) => String(item.action || '') === 'LOCAL_DOTASK_WATCH_VIDEO');
-  if (!task) {
-    return ['附加任务 | 看视频 | 当前接口未返回该任务'];
-  }
-  if (String(task.status || '') === '0' || String(task.btn || '').includes('已完成')) {
-    return ['附加任务 | 看视频 | 已完成'];
-  }
-
-  const finishResp = await postJson(CONFIG.api.finishVideo, headers);
-  updateCookieIfNeeded(account, finishResp.cookie, CONFIG.api.finishVideo);
-  headers.Cookie = account.cookie;
-
-  const finishData = finishResp.data && finishResp.data.data ? finishResp.data.data : {};
-  const finishStatus = finishData.statusDesc || finishData.returnStr || '未知结果';
-  const lines = [`附加任务 | 看视频 | ${shortText(finishStatus)}`];
-
-  const prizeResp = await postJson(CONFIG.api.getPrize, headers);
-  updateCookieIfNeeded(account, prizeResp.cookie, CONFIG.api.getPrize);
-  headers.Cookie = account.cookie;
-
-  const prizeData = prizeResp.data && prizeResp.data.data ? prizeResp.data.data : {};
-  const rewardBits = [
-    prizeData.prizeName,
-    prizeData.equityValue,
-    prizeData.returnStr,
-    prizeData.statusDesc
-  ].filter(Boolean).map((item) => shortText(item));
-  lines.push(`附加奖励 | ${rewardBits[0] || '未拿到明确奖励信息'}`);
-  return lines;
-}
-
 async function runAllTasks() {
   const account = loadDefaultAccount();
   if (!account || !account.cookie) {
@@ -318,21 +249,9 @@ async function runAllTasks() {
     Cookie: account.cookie
   };
 
-  const accountLabel = account.account || '联通账号';
-  const bodyLines = [];
-
   const signResult = await runSign(headers, account);
-  bodyLines.push(`${signResult.title} | ${signResult.detail}`);
-
-  const taskInfo = await getTaskInfo(headers, account);
-  if (taskInfo.lines && taskInfo.lines.length) bodyLines.push(...taskInfo.lines);
-  if (taskInfo.ok) {
-    const extraLines = await runVideoTask(headers, account, taskInfo.taskList || []);
-    if (extraLines && extraLines.length) bodyLines.push(...extraLines);
-  }
-
-  const subtitle = `${signResult.title} | ${accountLabel}`;
-  notify(CONFIG.name, subtitle, bodyLines.join('\n'));
+  const subtitle = `${signResult.title} | ${account.account || '联通账号'}`;
+  notify(CONFIG.name, subtitle, signResult.detail);
   return done();
 }
 

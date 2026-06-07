@@ -35,6 +35,17 @@ function getHeader(headers, name) {
   return undefined;
 }
 
+function setHeader(headers, name, value) {
+  const lower = String(name).toLowerCase();
+  for (const key of Object.keys(headers || {})) {
+    if (String(key).toLowerCase() === lower) {
+      headers[key] = value;
+      return;
+    }
+  }
+  headers[name] = value;
+}
+
 function normalizeSetCookie(raw) {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
@@ -135,11 +146,6 @@ function shortText(input) {
   return String(input || '').replace(/\s+/g, ' ').trim().slice(0, 240) || '(空响应)';
 }
 
-function compactLine(label, value) {
-  const text = shortText(value);
-  return text && text !== '(空响应)' ? `${label}${text}` : '';
-}
-
 async function fetchApi({ url, method = 'GET', headers = {}, body }) {
   const opts = {
     url,
@@ -157,83 +163,7 @@ async function fetchApi({ url, method = 'GET', headers = {}, body }) {
   };
 }
 
-async function postJson(url, headers, body) {
-  const resp = await fetchApi({ url, method: 'POST', headers, body: body === undefined ? '' : body });
-  const mergedCookie = mergeSetCookie(headers.Cookie || '', getHeader(resp.headers, 'set-cookie'));
-  return {
-    statusCode: resp.statusCode,
-    headers: resp.headers,
-    body: resp.body,
-    cookie: mergedCookie,
-    data: safeJsonParse(resp.body, null)
-  };
-}
-
-function updateCookieIfNeeded(account, nextCookie, sourceUrl) {
-  if (nextCookie && nextCookie !== account.cookie) {
-    account.cookie = nextCookie;
-    saveCapturedCookie(nextCookie, { source: 'task-refresh', url: sourceUrl });
-  }
-}
-
-function extractRewardText(payload) {
-  if (!payload || typeof payload !== 'object') return '';
-  const direct = [
-    payload.redSignMessage,
-    payload.prizeName,
-    payload.equityValue,
-    payload.returnStr,
-    payload.statusDesc,
-    payload.tips,
-    payload.desc,
-    payload.msg
-  ].filter(Boolean).map((item) => shortText(item));
-  return direct[0] || '';
-}
-
-async function runSign(headers, account) {
-  const resp = await postJson(CONFIG.api.sign, headers);
-  updateCookieIfNeeded(account, resp.cookie, CONFIG.api.sign);
-  headers.Cookie = account.cookie;
-
-  if (resp.statusCode < 200 || resp.statusCode >= 400) {
-    throw new Error(`签到接口请求失败 ${resp.statusCode}：${shortText(resp.body)}`);
-  }
-  if (!resp.data) {
-    throw new Error(`签到接口返回不是 JSON：${shortText(resp.body)}`);
-  }
-
-  const data = resp.data;
-  const code = String(data.code || '');
-  const desc = String(data.desc || data.msg || '').trim();
-  const reward = data && data.data && typeof data.data === 'object' ? extractRewardText(data.data) : '';
-
-  if (code === '0000') {
-    return {
-      ok: true,
-      state: 'signed',
-      title: '签到成功',
-      detail: reward || desc || '已完成'
-    };
-  }
-  if (code === '0002') {
-    return {
-      ok: true,
-      state: 'already',
-      title: '今日已签',
-      detail: reward || desc || '联通返回已签到'
-    };
-  }
-
-  return {
-    ok: false,
-    state: 'failed',
-    title: '签到失败',
-    detail: desc || JSON.stringify(data)
-  };
-}
-
-async function runAllTasks() {
+async function runSign() {
   const account = loadDefaultAccount();
   if (!account || !account.cookie) {
     notify(CONFIG.name, '未找到可用 cookie', '先打开联通 App 或签到页面抓取一次 cookie');
@@ -249,10 +179,48 @@ async function runAllTasks() {
     Cookie: account.cookie
   };
 
-  const signResult = await runSign(headers, account);
-  const subtitle = `${signResult.title} | ${account.account || '联通账号'}`;
-  notify(CONFIG.name, subtitle, signResult.detail);
-  return done();
+  try {
+    const resp = await fetchApi({ url: CONFIG.signUrl, method: 'POST', headers, body: '' });
+    const mergedCookie = mergeSetCookie(account.cookie, getHeader(resp.headers, 'set-cookie'));
+    if (mergedCookie && mergedCookie !== account.cookie) {
+      saveCapturedCookie(mergedCookie, { source: 'task-refresh', url: CONFIG.signUrl });
+      headers.Cookie = mergedCookie;
+    }
+
+    if (resp.statusCode < 200 || resp.statusCode >= 400) {
+      notify(CONFIG.name, `请求失败 ${resp.statusCode}`, shortText(resp.body));
+      return done();
+    }
+
+    const data = safeJsonParse(resp.body, null);
+    if (!data) {
+      notify(CONFIG.name, '返回不是 JSON', shortText(resp.body));
+      return done();
+    }
+
+    const code = String(data.code || '');
+    const desc = String(data.desc || data.msg || '').trim();
+    const reward = data && data.data && typeof data.data === 'object'
+      ? String(data.data.redSignMessage || '').trim()
+      : '';
+    const accountLabel = account.account || '联通账号';
+
+    if (code === '0000') {
+      notify(CONFIG.name, `签到成功 | ${accountLabel}`, reward || desc || '已完成');
+      return done();
+    }
+    if (code === '0002') {
+      notify(CONFIG.name, `今日已签 | ${accountLabel}`, desc || '联通返回已签到');
+      return done();
+    }
+
+    const msg = desc || JSON.stringify(data);
+    notify(CONFIG.name, `签到失败 | ${accountLabel}`, msg);
+    return done();
+  } catch (error) {
+    notify(CONFIG.name, '执行异常', error && error.message ? error.message : String(error));
+    return done();
+  }
 }
 
 function captureFromRequest() {
@@ -291,8 +259,8 @@ function captureFromResponse() {
   if (typeof $request !== 'undefined' && typeof $response !== 'undefined') {
     return captureFromResponse();
   }
-  return runAllTasks();
+  return runSign();
 })().catch((error) => {
-  notify(CONFIG.name, '执行异常', error && error.message ? error.message : String(error));
+  notify(CONFIG.name, '脚本异常', error && error.message ? error.message : String(error));
   done();
 });

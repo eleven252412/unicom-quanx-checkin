@@ -3,6 +3,8 @@
 ## 功能
 - 自动抓取联通登录态 cookie
 - 定时调用当前可用签到接口签到
+- 通知里显示当天签到/附加任务的具体返回内容
+- 自动补做当前还能直连完成的附加任务（当前已接入看视频任务与领奖尝试）
 - cookie 更新后自动覆盖本地存储
 - cookie 失效时提示重新打开联通 App 抓取
 
@@ -17,11 +19,11 @@
 
 ```ini
 [rewrite_local]
-^https?:\/\/(m\.client\.10010\.com|img\.client\.10010\.com|activity\.10010\.com)\/.*$ url script-request-header https://raw.githubusercontent.com/eleven252412/unicom-quanx-checkin/main/unicom-checkin-quanx.js?v=20260607
-^https?:\/\/(m\.client\.10010\.com|img\.client\.10010\.com|activity\.10010\.com)\/.*$ url script-response-header https://raw.githubusercontent.com/eleven252412/unicom-quanx-checkin/main/unicom-checkin-quanx.js?v=20260607
+^https?:\/\/(m\.client\.10010\.com|img\.client\.10010\.com|activity\.10010\.com)\/.*$ url script-request-header https://raw.githubusercontent.com/eleven252412/unicom-quanx-checkin/main/unicom-checkin-quanx.js?v=20260607-taskplus
+^https?:\/\/(m\.client\.10010\.com|img\.client\.10010\.com|activity\.10010\.com)\/.*$ url script-response-header https://raw.githubusercontent.com/eleven252412/unicom-quanx-checkin/main/unicom-checkin-quanx.js?v=20260607-taskplus
 
 [task_local]
-35 8 * * * https://raw.githubusercontent.com/eleven252412/unicom-quanx-checkin/main/unicom-checkin-quanx.js?v=20260607, tag=中国联通签到, enabled=true
+35 8 * * * https://raw.githubusercontent.com/eleven252412/unicom-quanx-checkin/main/unicom-checkin-quanx.js?v=20260607-taskplus, tag=中国联通签到, enabled=true
 
 [mitm]
 hostname = m.client.10010.com, img.client.10010.com, activity.10010.com

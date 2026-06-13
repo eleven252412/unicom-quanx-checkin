@@ -10,6 +10,7 @@ const CONFIG = {
   name: '中国联通签到',
   captureKey: 'china_unicom_cookie_store_v1',
   notifyTsKey: 'china_unicom_notify_ts_v1',
+  signAttemptDateKey: 'china_unicom_sign_attempt_date_v1',
   requestTimeout: 20000,
   notifyCooldownMs: 15000,
   signUrl: 'https://activity.10010.com/sixPalaceGridTurntableLottery/signin/daySign',
@@ -19,6 +20,7 @@ const CONFIG = {
 };
 
 function now() { return Date.now(); }
+function chinaDateKey() { return new Date(now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10); }
 function isoNow() { return new Date().toISOString(); }
 function done(value) { $done(value || {}); }
 function notify(title, subtitle, body) { $notify(title, subtitle || '', body || ''); }
@@ -170,6 +172,11 @@ async function runSign() {
     return done();
   }
 
+  const today = chinaDateKey();
+  if ($prefs.valueForKey(CONFIG.signAttemptDateKey) === today) {
+    return done();
+  }
+
   const headers = {
     Accept: 'application/json, text/plain, */*',
     Origin: 'https://img.client.10010.com',
@@ -180,6 +187,7 @@ async function runSign() {
   };
 
   try {
+    $prefs.setValueForKey(today, CONFIG.signAttemptDateKey);
     const resp = await fetchApi({ url: CONFIG.signUrl, method: 'POST', headers, body: '' });
     const mergedCookie = mergeSetCookie(account.cookie, getHeader(resp.headers, 'set-cookie'));
     if (mergedCookie && mergedCookie !== account.cookie) {

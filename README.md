@@ -17,11 +17,11 @@
 
 ```ini
 [rewrite_local]
-^https?:\/\/(m\.client\.10010\.com|img\.client\.10010\.com|activity\.10010\.com)\/.*$ url script-request-header https://raw.githubusercontent.com/eleven252412/unicom-quanx-checkin/main/unicom-checkin-quanx.js?v=20260607-taskplus
-^https?:\/\/(m\.client\.10010\.com|img\.client\.10010\.com|activity\.10010\.com)\/.*$ url script-response-header https://raw.githubusercontent.com/eleven252412/unicom-quanx-checkin/main/unicom-checkin-quanx.js?v=20260607-taskplus
+^https?:\/\/(m\.client\.10010\.com|img\.client\.10010\.com|activity\.10010\.com)\/.*$ url script-request-header https://raw.githubusercontent.com/eleven252412/unicom-quanx-checkin/main/unicom-checkin-quanx.js?v=20260614-once
+^https?:\/\/(m\.client\.10010\.com|img\.client\.10010\.com|activity\.10010\.com)\/.*$ url script-response-header https://raw.githubusercontent.com/eleven252412/unicom-quanx-checkin/main/unicom-checkin-quanx.js?v=20260614-once
 
 [task_local]
-35 8 * * * https://raw.githubusercontent.com/eleven252412/unicom-quanx-checkin/main/unicom-checkin-quanx.js?v=20260607-taskplus, tag=中国联通签到, enabled=true
+35 8 * * * https://raw.githubusercontent.com/eleven252412/unicom-quanx-checkin/main/unicom-checkin-quanx.js?v=20260614-once, tag=中国联通签到, enabled=true
 
 [mitm]
 hostname = m.client.10010.com, img.client.10010.com, activity.10010.com

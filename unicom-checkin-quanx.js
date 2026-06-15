@@ -148,6 +148,55 @@ function shortText(input) {
   return String(input || '').replace(/\s+/g, ' ').trim().slice(0, 240) || '(空响应)';
 }
 
+function extractStreakDays(data, fallbackTexts) {
+  const exactKeys = new Set([
+    'continueSignDays', 'continuousSignDays', 'continuousDays', 'consecutiveDays',
+    'serialSignDays', 'seriesSignDays', 'signDays', 'signinDays', 'signInDays',
+    'signedDays', 'signDay', 'dayCount', 'signCount', 'signNum'
+  ]);
+  const seen = new Set();
+
+  function toDays(value) {
+    if (value === null || value === undefined) return '';
+    const text = String(value).trim();
+    if (!/^\d{1,4}$/.test(text)) return '';
+    const num = Number(text);
+    return num > 0 && num < 1000 ? String(num) : '';
+  }
+
+  function scan(obj) {
+    if (!obj || typeof obj !== 'object' || seen.has(obj)) return '';
+    seen.add(obj);
+    for (const key of Object.keys(obj)) {
+      const lower = key.toLowerCase();
+      const value = obj[key];
+      if (
+        exactKeys.has(key) ||
+        (/day|days|num|count/.test(lower) && /continue|continuous|consecutive|serial|series|streak|sign/.test(lower)) ||
+        /连续|连签/.test(key)
+      ) {
+        const days = toDays(value);
+        if (days) return days;
+      }
+      const nested = scan(value);
+      if (nested) return nested;
+    }
+    return '';
+  }
+
+  const fromData = scan(data);
+  if (fromData) return fromData;
+
+  const text = (fallbackTexts || []).filter(Boolean).join(' ');
+  const matched = text.match(/(?:连签|连续签到|已连续签到|连续已签到)\s*(\d{1,4})\s*天/);
+  return matched ? toDays(matched[1]) : '';
+}
+
+function appendStreak(text, days) {
+  const base = text || '已完成';
+  return days ? `${base} | 已连签${days}天` : base;
+}
+
 async function fetchApi({ url, method = 'GET', headers = {}, body }) {
   const opts = {
     url,
@@ -211,14 +260,15 @@ async function runSign() {
     const reward = data && data.data && typeof data.data === 'object'
       ? String(data.data.redSignMessage || '').trim()
       : '';
+    const streakDays = extractStreakDays(data, [desc, reward, resp.body]);
     const accountLabel = account.account || '联通账号';
 
     if (code === '0000') {
-      notify(CONFIG.name, `签到成功 | ${accountLabel}`, reward || desc || '已完成');
+      notify(CONFIG.name, `签到成功 | ${accountLabel}`, appendStreak(reward || desc || '已完成', streakDays));
       return done();
     }
     if (code === '0002') {
-      notify(CONFIG.name, `今日已签 | ${accountLabel}`, desc || '联通返回已签到');
+      notify(CONFIG.name, `今日已签 | ${accountLabel}`, appendStreak(desc || '联通返回已签到', streakDays));
       return done();
     }
 

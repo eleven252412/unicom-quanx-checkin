@@ -3,7 +3,7 @@
  *
  * 模式：
  * 1) 抓取模式：打开联通 App/H5 登录后页面，自动保存签到所需 cookie
- * 2) 定时模式：读取本地 cookie，调用当前可用签到接口执行签到
+ * 2) 定时模式：读取本地多个账号 cookie，逐个调用当前可用签到接口执行签到并汇总结果
  */
 
 const CONFIG = {
@@ -11,6 +11,7 @@ const CONFIG = {
   captureKey: 'china_unicom_cookie_store_v1',
   notifyTsKey: 'china_unicom_notify_ts_v1',
   signAttemptDateKey: 'china_unicom_sign_attempt_date_v1',
+  signAttemptStoreKey: 'china_unicom_sign_attempt_store_v1',
   requestTimeout: 20000,
   notifyCooldownMs: 15000,
   signUrl: 'https://activity.10010.com/sixPalaceGridTurntableLottery/signin/daySign',
@@ -137,11 +138,54 @@ function saveCapturedCookie(cookie, meta) {
   return { changed, skipped: false, store, item: next };
 }
 
-function loadDefaultAccount() {
+function loadAccounts() {
   const store = currentStore();
-  const account = store.__default || Object.keys(store).find((k) => !k.startsWith('__'));
-  if (!account || !store[account] || !store[account].cookie) return null;
-  return store[account];
+  return Object.keys(store)
+    .filter((key) => !String(key).startsWith('__'))
+    .map((key) => store[key])
+    .filter((item) => item && item.cookie)
+    .map((item) => ({
+      account: item.account || accountFromCookie(item.cookie) || 'default',
+      cookie: item.cookie,
+      updatedAt: item.updatedAt || '',
+      source: item.source || '',
+      url: item.url || ''
+    }));
+}
+
+function saveCookieForAccount(accountName, cookie, meta) {
+  if (!isUsefulCookie(cookie)) return { changed: false, skipped: true, store: currentStore() };
+  const store = currentStore();
+  const account = accountName || accountFromCookie(cookie) || 'default';
+  const prev = store[account] || {};
+  const next = {
+    account,
+    cookie,
+    updatedAt: isoNow(),
+    source: meta && meta.source ? meta.source : 'task-refresh',
+    url: meta && meta.url ? meta.url : ''
+  };
+  const changed = prev.cookie !== cookie;
+  store[account] = next;
+  if (!store.__default) store.__default = account;
+  saveStore(store);
+  return { changed, skipped: false, store, item: next };
+}
+
+function getAttemptStore() {
+  return readJSON(CONFIG.signAttemptStoreKey, {});
+}
+
+function hasAttemptedToday(accountName, today) {
+  const attempts = getAttemptStore();
+  if (attempts && attempts[accountName] === today) return true;
+  return false;
+}
+
+function markAttemptedToday(accountName, today) {
+  const attempts = getAttemptStore();
+  attempts[accountName] = today;
+  writeJSON(CONFIG.signAttemptStoreKey, attempts);
 }
 
 function shortText(input) {
@@ -214,16 +258,10 @@ async function fetchApi({ url, method = 'GET', headers = {}, body }) {
   };
 }
 
-async function runSign() {
-  const account = loadDefaultAccount();
-  if (!account || !account.cookie) {
-    notify(CONFIG.name, '未找到可用 cookie', '先打开联通 App 或签到页面抓取一次 cookie');
-    return done();
-  }
-
-  const today = chinaDateKey();
-  if ($prefs.valueForKey(CONFIG.signAttemptDateKey) === today) {
-    return done();
+async function signOneAccount(account, today) {
+  const accountLabel = account.account || accountFromCookie(account.cookie) || '联通账号';
+  if (hasAttemptedToday(accountLabel, today)) {
+    return { account: accountLabel, status: '已跳过', message: '今日已执行过' };
   }
 
   const headers = {
@@ -236,23 +274,21 @@ async function runSign() {
   };
 
   try {
-    $prefs.setValueForKey(today, CONFIG.signAttemptDateKey);
+    markAttemptedToday(accountLabel, today);
     const resp = await fetchApi({ url: CONFIG.signUrl, method: 'POST', headers, body: '' });
     const mergedCookie = mergeSetCookie(account.cookie, getHeader(resp.headers, 'set-cookie'));
     if (mergedCookie && mergedCookie !== account.cookie) {
-      saveCapturedCookie(mergedCookie, { source: 'task-refresh', url: CONFIG.signUrl });
+      saveCookieForAccount(accountLabel, mergedCookie, { source: 'task-refresh', url: CONFIG.signUrl });
       headers.Cookie = mergedCookie;
     }
 
     if (resp.statusCode < 200 || resp.statusCode >= 400) {
-      notify(CONFIG.name, `请求失败 ${resp.statusCode}`, shortText(resp.body));
-      return done();
+      return { account: accountLabel, status: `请求失败 ${resp.statusCode}`, message: shortText(resp.body), failed: true };
     }
 
     const data = safeJsonParse(resp.body, null);
     if (!data) {
-      notify(CONFIG.name, '返回不是 JSON', shortText(resp.body));
-      return done();
+      return { account: accountLabel, status: '返回不是 JSON', message: shortText(resp.body), failed: true };
     }
 
     const code = String(data.code || '');
@@ -261,24 +297,46 @@ async function runSign() {
       ? String(data.data.redSignMessage || '').trim()
       : '';
     const streakDays = extractStreakDays(data, [desc, reward, resp.body]);
-    const accountLabel = account.account || '联通账号';
 
     if (code === '0000') {
-      notify(CONFIG.name, `签到成功 | ${accountLabel}`, appendStreak(reward || desc || '已完成', streakDays));
-      return done();
+      return { account: accountLabel, status: '签到成功', message: appendStreak(reward || desc || '已完成', streakDays) };
     }
     if (code === '0002') {
-      notify(CONFIG.name, `今日已签 | ${accountLabel}`, appendStreak(desc || '联通返回已签到', streakDays));
-      return done();
+      return { account: accountLabel, status: '今日已签', message: appendStreak(desc || '联通返回已签到', streakDays) };
     }
 
-    const msg = desc || JSON.stringify(data);
-    notify(CONFIG.name, `签到失败 | ${accountLabel}`, msg);
-    return done();
+    return { account: accountLabel, status: '签到失败', message: desc || JSON.stringify(data), failed: true };
   } catch (error) {
-    notify(CONFIG.name, '执行异常', error && error.message ? error.message : String(error));
+    return { account: accountLabel, status: '执行异常', message: error && error.message ? error.message : String(error), failed: true };
+  }
+}
+
+function formatSummary(results) {
+  const successCount = results.filter((item) => !item.failed).length;
+  const total = results.length;
+  const lines = results.map((item) => `${item.account}：${item.status}${item.message ? ' | ' + item.message : ''}`);
+  return {
+    subtitle: `完成 ${successCount}/${total}`,
+    body: lines.join('\n')
+  };
+}
+
+async function runSign() {
+  const accounts = loadAccounts();
+  if (!accounts.length) {
+    notify(CONFIG.name, '未找到可用 cookie', '先打开联通 App 或签到页面抓取一次 cookie；多账号请分别登录并打开页面抓取');
     return done();
   }
+
+  const today = chinaDateKey();
+  const results = [];
+  for (const account of accounts) {
+    results.push(await signOneAccount(account, today));
+  }
+
+  const summary = formatSummary(results);
+  notify(CONFIG.name, summary.subtitle, summary.body);
+  return done();
 }
 
 function captureFromRequest() {

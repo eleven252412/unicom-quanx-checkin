@@ -264,6 +264,21 @@ async function signOneAccount(account, today) {
     return { account: accountLabel, status: '已跳过', message: '今日已执行过' };
   }
 
+  // 优化1: 请求前校验 cookie 归属，防止串号
+  const cookieMobile = accountFromCookie(account.cookie);
+  if (cookieMobile && accountLabel !== '联通账号' && accountLabel !== 'default' && cookieMobile !== accountLabel) {
+    return { account: accountLabel, status: 'cookie 串号', message: `cookie 中 c_mobile=${cookieMobile}，但账号标识=${accountLabel}，数据不匹配，请重新抓取`, failed: true };
+  }
+
+  // 优化2: 请求前校验 cookie 必要字段完整性
+  const jar = parseCookie(account.cookie);
+  const hasT3 = jar.has('t3_token') && String(jar.get('t3_token') || '').trim();
+  const hasEcs = jar.has('ecs_token') && String(jar.get('ecs_token') || '').trim();
+  const hasMobile = jar.has('c_mobile') && String(jar.get('c_mobile') || '').trim();
+  if (!hasT3 || !hasEcs || !hasMobile) {
+    return { account: accountLabel, status: 'cookie 不完整', message: `t3_token=${hasT3?'有':'缺'} ecs_token=${hasEcs?'有':'缺'} c_mobile=${hasMobile?'有':'缺'}，请重新抓取 cookie`, failed: true };
+  }
+
   const headers = {
     Accept: 'application/json, text/plain, */*',
     Origin: 'https://img.client.10010.com',
@@ -305,7 +320,7 @@ async function signOneAccount(account, today) {
       return { account: accountLabel, status: '今日已签', message: appendStreak(desc || '联通返回已签到', streakDays) };
     }
 
-    return { account: accountLabel, status: '签到失败', message: desc || JSON.stringify(data), failed: true };
+    return { account: accountLabel, status: '签到失败', message: `${desc || JSON.stringify(data)} | c_mobile=${cookieMobile}`, failed: true };
   } catch (error) {
     return { account: accountLabel, status: '执行异常', message: error && error.message ? error.message : String(error), failed: true };
   }

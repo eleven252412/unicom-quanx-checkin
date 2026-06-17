@@ -178,13 +178,21 @@ function getAttemptStore() {
 
 function hasAttemptedToday(accountName, today) {
   const attempts = getAttemptStore();
-  if (attempts && attempts[accountName] === today) return true;
+  const item = attempts && attempts[accountName];
+  if (item === today) return true;
+  if (item && typeof item === 'object' && item.date === today && item.completed) return true;
   return false;
 }
 
-function markAttemptedToday(accountName, today) {
+function markAttemptedToday(accountName, today, result) {
   const attempts = getAttemptStore();
-  attempts[accountName] = today;
+  attempts[accountName] = {
+    date: today,
+    completed: true,
+    status: result && result.status ? result.status : '',
+    message: result && result.message ? result.message : '',
+    updatedAt: isoNow()
+  };
   writeJSON(CONFIG.signAttemptStoreKey, attempts);
 }
 
@@ -289,7 +297,6 @@ async function signOneAccount(account, today) {
   };
 
   try {
-    markAttemptedToday(accountLabel, today);
     const resp = await fetchApi({ url: CONFIG.signUrl, method: 'POST', headers, body: '' });
     const mergedCookie = mergeSetCookie(account.cookie, getHeader(resp.headers, 'set-cookie'));
     if (mergedCookie && mergedCookie !== account.cookie) {
@@ -314,10 +321,14 @@ async function signOneAccount(account, today) {
     const streakDays = extractStreakDays(data, [desc, reward, resp.body]);
 
     if (code === '0000') {
-      return { account: accountLabel, status: '签到成功', message: appendStreak(reward || desc || '已完成', streakDays) };
+      const result = { account: accountLabel, status: '签到成功', message: appendStreak(reward || desc || '已完成', streakDays) };
+      markAttemptedToday(accountLabel, today, result);
+      return result;
     }
     if (code === '0002') {
-      return { account: accountLabel, status: '今日已签', message: appendStreak(desc || '联通返回已签到', streakDays) };
+      const result = { account: accountLabel, status: '今日已签', message: appendStreak(desc || '联通返回已签到', streakDays) };
+      markAttemptedToday(accountLabel, today, result);
+      return result;
     }
 
     return { account: accountLabel, status: '签到失败', message: `${desc || JSON.stringify(data)} | c_mobile=${cookieMobile}`, failed: true };

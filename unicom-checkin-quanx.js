@@ -98,11 +98,36 @@ function isUsefulCookie(cookie) {
 }
 
 function currentStore() {
-  return readJSON(CONFIG.captureKey, {});
+  const prefix = CONFIG.captureKey + '_';
+  const store = {};
+  // 读取所有以 china_unicom_cookie_store_v1_ 开头的key
+  for (let i = 0; i < 20; i++) {
+    const mobile = $prefs.valueForKey(CONFIG.captureKey + '_mobile_' + i) || '';
+    if (!mobile) break;
+    const data = readJSON(prefix + mobile, null);
+    if (data && data.cookie) store[mobile] = data;
+  }
+  return store;
 }
 
 function saveStore(store) {
-  return writeJSON(CONFIG.captureKey, store || {});
+  const prefix = CONFIG.captureKey + '_';
+  const mobiles = Object.keys(store).filter(k => !k.startsWith('__'));
+  // 保存每个账号到独立key
+  mobiles.forEach(mobile => {
+    writeJSON(prefix + mobile, store[mobile]);
+  });
+  // 保存手机号索引
+  mobiles.forEach((mobile, i) => {
+    $prefs.setValueForKey(mobile, CONFIG.captureKey + '_mobile_' + i);
+  });
+  // 清理多余的索引
+  for (let i = mobiles.length; i < 20; i++) {
+    const existing = $prefs.valueForKey(CONFIG.captureKey + '_mobile_' + i);
+    if (!existing) break;
+    $prefs.setValueForKey('', CONFIG.captureKey + '_mobile_' + i);
+  }
+  return true;
 }
 
 function shouldNotify() {
@@ -352,7 +377,7 @@ function captureFromResponse() {
   const respHeaders = resp.headers || {};
   const respSetCookie = getHeader(respHeaders, 'set-cookie') || '';
   if (!respSetCookie) return done({ headers: respHeaders });
-  // 从响应set-cookie提取账号标识，避免混入请求jar中其他账号的token
+  // 从响应set-cookie提取账号标识
   const tempJar = parseCookie('');
   normalizeSetCookie(respSetCookie).forEach((line) => {
     const first = String(line || '').split(';')[0].trim();
@@ -363,9 +388,10 @@ function captureFromResponse() {
     if (name && value && !/^(deleted|null|undefined)$/i.test(value)) tempJar.set(name, value);
   });
   const respMobile = tempJar.get('c_mobile') || '';
-  // 用已存储的该账号cookie作为基础，而不是请求jar
+  if (!respMobile) return done({ headers: respHeaders });
+  // 用已存储的该账号cookie作为基础
   const store = currentStore();
-  const existingCookie = respMobile && store[respMobile] ? store[respMobile].cookie || '' : '';
+  const existingCookie = store[respMobile] ? store[respMobile].cookie || '' : '';
   const merged = mergeSetCookie(existingCookie, respSetCookie);
   if (!merged) return done({ headers: respHeaders });
   const saved = saveCapturedCookie(merged, { source: 'response-header', url });

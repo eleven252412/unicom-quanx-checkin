@@ -350,8 +350,23 @@ function captureFromResponse() {
   const url = req.url || '';
   const reqHeaders = req.headers || {};
   const respHeaders = resp.headers || {};
-  const reqCookie = getHeader(reqHeaders, 'cookie') || '';
-  const merged = mergeSetCookie(reqCookie, getHeader(respHeaders, 'set-cookie'));
+  const respSetCookie = getHeader(respHeaders, 'set-cookie') || '';
+  if (!respSetCookie) return done({ headers: respHeaders });
+  // 从响应set-cookie提取账号标识，避免混入请求jar中其他账号的token
+  const tempJar = parseCookie('');
+  normalizeSetCookie(respSetCookie).forEach((line) => {
+    const first = String(line || '').split(';')[0].trim();
+    const idx = first.indexOf('=');
+    if (idx <= 0) return;
+    const name = first.slice(0, idx).trim();
+    const value = first.slice(idx + 1).trim();
+    if (name && value && !/^(deleted|null|undefined)$/i.test(value)) tempJar.set(name, value);
+  });
+  const respMobile = tempJar.get('c_mobile') || '';
+  // 用已存储的该账号cookie作为基础，而不是请求jar
+  const store = currentStore();
+  const existingCookie = respMobile && store[respMobile] ? store[respMobile].cookie || '' : '';
+  const merged = mergeSetCookie(existingCookie, respSetCookie);
   if (!merged) return done({ headers: respHeaders });
   const saved = saveCapturedCookie(merged, { source: 'response-header', url });
   if (!saved.skipped && saved.changed && shouldNotify()) {

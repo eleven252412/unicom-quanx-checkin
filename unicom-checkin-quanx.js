@@ -10,8 +10,6 @@ const CONFIG = {
   name: '中国联通签到',
   captureKey: 'china_unicom_cookie_store_v1',
   notifyTsKey: 'china_unicom_notify_ts_v1',
-  signAttemptDateKey: 'china_unicom_sign_attempt_date_v1',
-  signAttemptStoreKey: 'china_unicom_sign_attempt_store_v1',
   requestTimeout: 20000,
   notifyCooldownMs: 15000,
   signUrl: 'https://activity.10010.com/sixPalaceGridTurntableLottery/signin/daySign',
@@ -172,30 +170,6 @@ function saveCookieForAccount(accountName, cookie, meta) {
   return { changed, skipped: false, store, item: next };
 }
 
-function getAttemptStore() {
-  return readJSON(CONFIG.signAttemptStoreKey, {});
-}
-
-function hasAttemptedToday(accountName, today) {
-  const attempts = getAttemptStore();
-  const item = attempts && attempts[accountName];
-  if (item === today) return true;
-  if (item && typeof item === 'object' && item.date === today && item.completed) return true;
-  return false;
-}
-
-function markAttemptedToday(accountName, today, result) {
-  const attempts = getAttemptStore();
-  attempts[accountName] = {
-    date: today,
-    completed: true,
-    status: result && result.status ? result.status : '',
-    message: result && result.message ? result.message : '',
-    updatedAt: isoNow()
-  };
-  writeJSON(CONFIG.signAttemptStoreKey, attempts);
-}
-
 function shortText(input) {
   return String(input || '').replace(/\s+/g, ' ').trim().slice(0, 240) || '(空响应)';
 }
@@ -266,26 +240,8 @@ async function fetchApi({ url, method = 'GET', headers = {}, body }) {
   };
 }
 
-async function signOneAccount(account, today) {
+async function signOneAccount(account) {
   const accountLabel = account.account || accountFromCookie(account.cookie) || '联通账号';
-  if (hasAttemptedToday(accountLabel, today)) {
-    return { account: accountLabel, status: '已跳过', message: '今日已执行过' };
-  }
-
-  // 优化1: 请求前校验 cookie 归属，防止串号
-  const cookieMobile = accountFromCookie(account.cookie);
-  if (cookieMobile && accountLabel !== '联通账号' && accountLabel !== 'default' && cookieMobile !== accountLabel) {
-    return { account: accountLabel, status: 'cookie 串号', message: `cookie 中 c_mobile=${cookieMobile}，但账号标识=${accountLabel}，数据不匹配，请重新抓取`, failed: true };
-  }
-
-  // 优化2: 请求前校验 cookie 必要字段完整性
-  const jar = parseCookie(account.cookie);
-  const hasT3 = jar.has('t3_token') && String(jar.get('t3_token') || '').trim();
-  const hasEcs = jar.has('ecs_token') && String(jar.get('ecs_token') || '').trim();
-  const hasMobile = jar.has('c_mobile') && String(jar.get('c_mobile') || '').trim();
-  if (!hasT3 || !hasEcs || !hasMobile) {
-    return { account: accountLabel, status: 'cookie 不完整', message: `t3_token=${hasT3?'有':'缺'} ecs_token=${hasEcs?'有':'缺'} c_mobile=${hasMobile?'有':'缺'}，请重新抓取 cookie`, failed: true };
-  }
 
   const headers = {
     Accept: 'application/json, text/plain, */*',
@@ -321,17 +277,13 @@ async function signOneAccount(account, today) {
     const streakDays = extractStreakDays(data, [desc, reward, resp.body]);
 
     if (code === '0000') {
-      const result = { account: accountLabel, status: '签到成功', message: appendStreak(reward || desc || '已完成', streakDays) };
-      markAttemptedToday(accountLabel, today, result);
-      return result;
+      return { account: accountLabel, status: '签到成功', message: appendStreak(reward || desc || '已完成', streakDays) };
     }
     if (code === '0002') {
-      const result = { account: accountLabel, status: '今日已签', message: appendStreak(desc || '联通返回已签到', streakDays) };
-      markAttemptedToday(accountLabel, today, result);
-      return result;
+      return { account: accountLabel, status: '今日已签', message: appendStreak(desc || '联通返回已签到', streakDays) };
     }
 
-    return { account: accountLabel, status: '签到失败', message: `${desc || JSON.stringify(data)} | c_mobile=${cookieMobile}`, failed: true };
+    return { account: accountLabel, status: '签到失败', message: desc || JSON.stringify(data), failed: true };
   } catch (error) {
     return { account: accountLabel, status: '执行异常', message: error && error.message ? error.message : String(error), failed: true };
   }
@@ -354,10 +306,9 @@ async function runSign() {
     return done();
   }
 
-  const today = chinaDateKey();
   const results = [];
   for (const account of accounts) {
-    results.push(await signOneAccount(account, today));
+    results.push(await signOneAccount(account));
   }
 
   const summary = formatSummary(results);

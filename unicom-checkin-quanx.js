@@ -3,7 +3,7 @@
  *
  * 模式：
  * 1) 抓取模式：打开联通 App/H5 登录后页面，自动保存签到所需 cookie
- * 2) 定时模式：读取本地多个账号 cookie，逐个调用当前可用签到接口执行签到并汇总结果
+ * 2) 定时模式：读取本地 cookie，调用当前可用签到接口执行签到
  */
 
 const CONFIG = {
@@ -135,91 +135,15 @@ function saveCapturedCookie(cookie, meta) {
   return { changed, skipped: false, store, item: next };
 }
 
-function loadAccounts() {
+function loadDefaultAccount() {
   const store = currentStore();
-  return Object.keys(store)
-    .filter((key) => !String(key).startsWith('__'))
-    .map((key) => store[key])
-    .filter((item) => item && item.cookie)
-    .map((item) => ({
-      account: item.account || accountFromCookie(item.cookie) || 'default',
-      cookie: item.cookie,
-      updatedAt: item.updatedAt || '',
-      source: item.source || '',
-      url: item.url || ''
-    }));
-}
-
-function saveCookieForAccount(accountName, cookie, meta) {
-  if (!isUsefulCookie(cookie)) return { changed: false, skipped: true, store: currentStore() };
-  const store = currentStore();
-  const account = accountName || accountFromCookie(cookie) || 'default';
-  const prev = store[account] || {};
-  const next = {
-    account,
-    cookie,
-    updatedAt: isoNow(),
-    source: meta && meta.source ? meta.source : 'task-refresh',
-    url: meta && meta.url ? meta.url : ''
-  };
-  const changed = prev.cookie !== cookie;
-  store[account] = next;
-  if (!store.__default) store.__default = account;
-  saveStore(store);
-  return { changed, skipped: false, store, item: next };
+  const account = store.__default || Object.keys(store).find((k) => !k.startsWith('__'));
+  if (!account || !store[account] || !store[account].cookie) return null;
+  return store[account];
 }
 
 function shortText(input) {
   return String(input || '').replace(/\s+/g, ' ').trim().slice(0, 240) || '(空响应)';
-}
-
-function extractStreakDays(data, fallbackTexts) {
-  const exactKeys = new Set([
-    'continueSignDays', 'continuousSignDays', 'continuousDays', 'consecutiveDays',
-    'serialSignDays', 'seriesSignDays', 'signDays', 'signinDays', 'signInDays',
-    'signedDays', 'signDay', 'dayCount', 'signCount', 'signNum'
-  ]);
-  const seen = new Set();
-
-  function toDays(value) {
-    if (value === null || value === undefined) return '';
-    const text = String(value).trim();
-    if (!/^\d{1,4}$/.test(text)) return '';
-    const num = Number(text);
-    return num > 0 && num < 1000 ? String(num) : '';
-  }
-
-  function scan(obj) {
-    if (!obj || typeof obj !== 'object' || seen.has(obj)) return '';
-    seen.add(obj);
-    for (const key of Object.keys(obj)) {
-      const lower = key.toLowerCase();
-      const value = obj[key];
-      if (
-        exactKeys.has(key) ||
-        (/day|days|num|count/.test(lower) && /continue|continuous|consecutive|serial|series|streak|sign/.test(lower)) ||
-        /连续|连签/.test(key)
-      ) {
-        const days = toDays(value);
-        if (days) return days;
-      }
-      const nested = scan(value);
-      if (nested) return nested;
-    }
-    return '';
-  }
-
-  const fromData = scan(data);
-  if (fromData) return fromData;
-
-  const text = (fallbackTexts || []).filter(Boolean).join(' ');
-  const matched = text.match(/(?:连签|连续签到|已连续签到|连续已签到)\s*(\d{1,4})\s*天/);
-  return matched ? toDays(matched[1]) : '';
-}
-
-function appendStreak(text, days) {
-  const base = text || '已完成';
-  return days ? `${base} | 已连签${days}天` : base;
 }
 
 async function fetchApi({ url, method = 'GET', headers = {}, body }) {
@@ -239,22 +163,11 @@ async function fetchApi({ url, method = 'GET', headers = {}, body }) {
   };
 }
 
-async function signOneAccount(account) {
-  const accountLabel = account.account || accountFromCookie(account.cookie) || '联通账号';
-
-  // 优化1: 请求前校验 cookie 归属，防止串号
-  const cookieMobile = accountFromCookie(account.cookie);
-  if (cookieMobile && accountLabel !== '联通账号' && accountLabel !== 'default' && cookieMobile !== accountLabel) {
-    return { account: accountLabel, status: 'cookie 串号', message: `cookie 中 c_mobile=${cookieMobile}，但账号标识=${accountLabel}，数据不匹配，请重新抓取`, failed: true };
-  }
-
-  // 优化2: 请求前校验 cookie 必要字段完整性
-  const jar = parseCookie(account.cookie);
-  const hasT3 = jar.has('t3_token') && String(jar.get('t3_token') || '').trim();
-  const hasEcs = jar.has('ecs_token') && String(jar.get('ecs_token') || '').trim();
-  const hasMobile = jar.has('c_mobile') && String(jar.get('c_mobile') || '').trim();
-  if (!hasT3 || !hasEcs || !hasMobile) {
-    return { account: accountLabel, status: 'cookie 不完整', message: `t3_token=${hasT3?'有':'缺'} ecs_token=${hasEcs?'有':'缺'} c_mobile=${hasMobile?'有':'缺'}，请重新抓取 cookie`, failed: true };
+async function runSign() {
+  const account = loadDefaultAccount();
+  if (!account || !account.cookie) {
+    notify(CONFIG.name, '未找到可用 cookie', '先打开联通 App 或签到页面抓取一次 cookie');
+    return done();
   }
 
   const headers = {
@@ -270,17 +183,19 @@ async function signOneAccount(account) {
     const resp = await fetchApi({ url: CONFIG.signUrl, method: 'POST', headers, body: '' });
     const mergedCookie = mergeSetCookie(account.cookie, getHeader(resp.headers, 'set-cookie'));
     if (mergedCookie && mergedCookie !== account.cookie) {
-      saveCookieForAccount(accountLabel, mergedCookie, { source: 'task-refresh', url: CONFIG.signUrl });
+      saveCapturedCookie(mergedCookie, { source: 'task-refresh', url: CONFIG.signUrl });
       headers.Cookie = mergedCookie;
     }
 
     if (resp.statusCode < 200 || resp.statusCode >= 400) {
-      return { account: accountLabel, status: `请求失败 ${resp.statusCode}`, message: shortText(resp.body), failed: true };
+      notify(CONFIG.name, `请求失败 ${resp.statusCode}`, shortText(resp.body));
+      return done();
     }
 
     const data = safeJsonParse(resp.body, null);
     if (!data) {
-      return { account: accountLabel, status: '返回不是 JSON', message: shortText(resp.body), failed: true };
+      notify(CONFIG.name, '返回不是 JSON', shortText(resp.body));
+      return done();
     }
 
     const code = String(data.code || '');
@@ -288,46 +203,24 @@ async function signOneAccount(account) {
     const reward = data && data.data && typeof data.data === 'object'
       ? String(data.data.redSignMessage || '').trim()
       : '';
-    const streakDays = extractStreakDays(data, [desc, reward, resp.body]);
+    const accountLabel = account.account || '联通账号';
 
     if (code === '0000') {
-      return { account: accountLabel, status: '签到成功', message: appendStreak(reward || desc || '已完成', streakDays) };
+      notify(CONFIG.name, `签到成功 | ${accountLabel}`, reward || desc || '已完成');
+      return done();
     }
     if (code === '0002') {
-      return { account: accountLabel, status: '今日已签', message: appendStreak(desc || '联通返回已签到', streakDays) };
+      notify(CONFIG.name, `今日已签 | ${accountLabel}`, desc || '联通返回已签到');
+      return done();
     }
 
-    return { account: accountLabel, status: '签到失败', message: `${desc || JSON.stringify(data)} | c_mobile=${cookieMobile}`, failed: true };
+    const msg = desc || JSON.stringify(data);
+    notify(CONFIG.name, `签到失败 | ${accountLabel}`, msg);
+    return done();
   } catch (error) {
-    return { account: accountLabel, status: '执行异常', message: error && error.message ? error.message : String(error), failed: true };
-  }
-}
-
-function formatSummary(results) {
-  const successCount = results.filter((item) => !item.failed).length;
-  const total = results.length;
-  const lines = results.map((item) => `${item.account}：${item.status}${item.message ? ' | ' + item.message : ''}`);
-  return {
-    subtitle: `完成 ${successCount}/${total}`,
-    body: lines.join('\n')
-  };
-}
-
-async function runSign() {
-  const accounts = loadAccounts();
-  if (!accounts.length) {
-    notify(CONFIG.name, '未找到可用 cookie', '先打开联通 App 或签到页面抓取一次 cookie；多账号请分别登录并打开页面抓取');
+    notify(CONFIG.name, '执行异常', error && error.message ? error.message : String(error));
     return done();
   }
-
-  const results = [];
-  for (const account of accounts) {
-    results.push(await signOneAccount(account));
-  }
-
-  const summary = formatSummary(results);
-  notify(CONFIG.name, summary.subtitle, summary.body);
-  return done();
 }
 
 function captureFromRequest() {
@@ -347,11 +240,9 @@ function captureFromResponse() {
   const req = $request || {};
   const resp = $response || {};
   const url = req.url || '';
-  const reqHeaders = req.headers || {};
   const respHeaders = resp.headers || {};
   const respSetCookie = getHeader(respHeaders, 'set-cookie') || '';
   if (!respSetCookie) return done({ headers: respHeaders });
-  // 从响应 Set-Cookie 中提取 c_mobile，避免用请求 jar（含所有账号 cookie）造成污染
   const tempJar = parseCookie('');
   normalizeSetCookie(respSetCookie).forEach((line) => {
     const first = String(line || '').split(';')[0].trim();
@@ -372,7 +263,6 @@ function captureFromResponse() {
       notify(CONFIG.name, '已自动更新 cookie', saved.item && saved.item.account ? saved.item.account : url);
     }
   } else {
-    // cookie 缺少必要字段，给用户明确诊断
     const jar = parseCookie(merged);
     const missing = [];
     if (!jar.has('t3_token') || !String(jar.get('t3_token') || '').trim()) missing.push('t3_token');

@@ -10,8 +10,6 @@ const CONFIG = {
   name: '中国联通签到',
   captureKey: 'china_unicom_cookie_store_v1',
   notifyTsKey: 'china_unicom_notify_ts_v1',
-  signAttemptDateKey: 'china_unicom_sign_attempt_date_v1',
-  signAttemptStoreKey: 'china_unicom_sign_attempt_store_v1',
   requestTimeout: 20000,
   notifyCooldownMs: 15000,
   signUrl: 'https://activity.10010.com/sixPalaceGridTurntableLottery/signin/daySign',
@@ -21,7 +19,6 @@ const CONFIG = {
 };
 
 function now() { return Date.now(); }
-function chinaDateKey() { return new Date(now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10); }
 function isoNow() { return new Date().toISOString(); }
 function done(value) { $done(value || {}); }
 function notify(title, subtitle, body) { $notify(title, subtitle || '', body || ''); }
@@ -172,22 +169,6 @@ function saveCookieForAccount(accountName, cookie, meta) {
   return { changed, skipped: false, store, item: next };
 }
 
-function getAttemptStore() {
-  return readJSON(CONFIG.signAttemptStoreKey, {});
-}
-
-function hasAttemptedToday(accountName, today) {
-  const attempts = getAttemptStore();
-  if (attempts && attempts[accountName] === today) return true;
-  return false;
-}
-
-function markAttemptedToday(accountName, today) {
-  const attempts = getAttemptStore();
-  attempts[accountName] = today;
-  writeJSON(CONFIG.signAttemptStoreKey, attempts);
-}
-
 function shortText(input) {
   return String(input || '').replace(/\s+/g, ' ').trim().slice(0, 240) || '(空响应)';
 }
@@ -258,11 +239,8 @@ async function fetchApi({ url, method = 'GET', headers = {}, body }) {
   };
 }
 
-async function signOneAccount(account, today) {
+async function signOneAccount(account) {
   const accountLabel = account.account || accountFromCookie(account.cookie) || '联通账号';
-  if (hasAttemptedToday(accountLabel, today)) {
-    return { account: accountLabel, status: '已跳过', message: '今日已执行过' };
-  }
 
   // 优化1: 请求前校验 cookie 归属，防止串号
   const cookieMobile = accountFromCookie(account.cookie);
@@ -289,7 +267,6 @@ async function signOneAccount(account, today) {
   };
 
   try {
-    markAttemptedToday(accountLabel, today);
     const resp = await fetchApi({ url: CONFIG.signUrl, method: 'POST', headers, body: '' });
     const mergedCookie = mergeSetCookie(account.cookie, getHeader(resp.headers, 'set-cookie'));
     if (mergedCookie && mergedCookie !== account.cookie) {
@@ -343,10 +320,9 @@ async function runSign() {
     return done();
   }
 
-  const today = chinaDateKey();
   const results = [];
   for (const account of accounts) {
-    results.push(await signOneAccount(account, today));
+    results.push(await signOneAccount(account));
   }
 
   const summary = formatSummary(results);

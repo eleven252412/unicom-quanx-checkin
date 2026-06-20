@@ -373,38 +373,12 @@ function captureFromResponse() {
   const url = req.url || '';
   const reqHeaders = req.headers || {};
   const respHeaders = resp.headers || {};
-  const respSetCookie = getHeader(respHeaders, 'set-cookie') || '';
-  if (!respSetCookie) return done({ headers: respHeaders });
-  // 从响应 Set-Cookie 中提取 c_mobile，避免用请求 jar（含所有账号 cookie）造成污染
-  const tempJar = parseCookie('');
-  normalizeSetCookie(respSetCookie).forEach((line) => {
-    const first = String(line || '').split(';')[0].trim();
-    const idx = first.indexOf('=');
-    if (idx <= 0) return;
-    const name = first.slice(0, idx).trim();
-    const value = first.slice(idx + 1).trim();
-    if (name && value && !/^(deleted|null|undefined)$/i.test(value)) tempJar.set(name, value);
-  });
-  const respMobile = tempJar.get('c_mobile') || '';
-  const store = currentStore();
-  const existingCookie = respMobile && store[respMobile] ? store[respMobile].cookie || '' : '';
-  const merged = mergeSetCookie(existingCookie, respSetCookie);
+  const reqCookie = getHeader(reqHeaders, 'cookie') || '';
+  const merged = mergeSetCookie(reqCookie, getHeader(respHeaders, 'set-cookie'));
   if (!merged) return done({ headers: respHeaders });
   const saved = saveCapturedCookie(merged, { source: 'response-header', url });
-  if (!saved.skipped) {
-    if (saved.changed && shouldNotify()) {
-      notify(CONFIG.name, '已自动更新 cookie', saved.item && saved.item.account ? saved.item.account : url);
-    }
-  } else {
-    // cookie 缺少必要字段，给用户明确诊断
-    const jar = parseCookie(merged);
-    const missing = [];
-    if (!jar.has('t3_token') || !String(jar.get('t3_token') || '').trim()) missing.push('t3_token');
-    if (!jar.has('ecs_token') || !String(jar.get('ecs_token') || '').trim()) missing.push('ecs_token');
-    if (!jar.has('c_mobile') || !String(jar.get('c_mobile') || '').trim()) missing.push('c_mobile');
-    if (shouldNotify()) {
-      notify(CONFIG.name, 'cookie 抓取失败', '缺少 ' + missing.join('、') + '，请确认从联通 H5/App 页面抓取，且重放已关闭');
-    }
+  if (!saved.skipped && saved.changed && shouldNotify()) {
+    notify(CONFIG.name, '已自动更新 cookie', saved.item && saved.item.account ? saved.item.account : url);
   }
   done({ headers: respHeaders });
 }

@@ -264,21 +264,6 @@ async function signOneAccount(account, today) {
     return { account: accountLabel, status: '已跳过', message: '今日已执行过' };
   }
 
-  // 优化1: 请求前校验 cookie 归属，防止串号
-  const cookieMobile = accountFromCookie(account.cookie);
-  if (cookieMobile && accountLabel !== '联通账号' && accountLabel !== 'default' && cookieMobile !== accountLabel) {
-    return { account: accountLabel, status: 'cookie 串号', message: `cookie 中 c_mobile=${cookieMobile}，但账号标识=${accountLabel}，数据不匹配，请重新抓取`, failed: true };
-  }
-
-  // 优化2: 请求前校验 cookie 必要字段完整性
-  const jar = parseCookie(account.cookie);
-  const hasT3 = jar.has('t3_token') && String(jar.get('t3_token') || '').trim();
-  const hasEcs = jar.has('ecs_token') && String(jar.get('ecs_token') || '').trim();
-  const hasMobile = jar.has('c_mobile') && String(jar.get('c_mobile') || '').trim();
-  if (!hasT3 || !hasEcs || !hasMobile) {
-    return { account: accountLabel, status: 'cookie 不完整', message: `t3_token=${hasT3?'有':'缺'} ecs_token=${hasEcs?'有':'缺'} c_mobile=${hasMobile?'有':'缺'}，请重新抓取 cookie`, failed: true };
-  }
-
   const headers = {
     Accept: 'application/json, text/plain, */*',
     Origin: 'https://img.client.10010.com',
@@ -320,7 +305,7 @@ async function signOneAccount(account, today) {
       return { account: accountLabel, status: '今日已签', message: appendStreak(desc || '联通返回已签到', streakDays) };
     }
 
-    return { account: accountLabel, status: '签到失败', message: `${desc || JSON.stringify(data)} | c_mobile=${cookieMobile}`, failed: true };
+    return { account: accountLabel, status: '签到失败', message: desc || JSON.stringify(data), failed: true };
   } catch (error) {
     return { account: accountLabel, status: '执行异常', message: error && error.message ? error.message : String(error), failed: true };
   }
@@ -373,38 +358,12 @@ function captureFromResponse() {
   const url = req.url || '';
   const reqHeaders = req.headers || {};
   const respHeaders = resp.headers || {};
-  const respSetCookie = getHeader(respHeaders, 'set-cookie') || '';
-  if (!respSetCookie) return done({ headers: respHeaders });
-  // 从响应 Set-Cookie 中提取 c_mobile，避免用请求 jar（含所有账号 cookie）造成污染
-  const tempJar = parseCookie('');
-  normalizeSetCookie(respSetCookie).forEach((line) => {
-    const first = String(line || '').split(';')[0].trim();
-    const idx = first.indexOf('=');
-    if (idx <= 0) return;
-    const name = first.slice(0, idx).trim();
-    const value = first.slice(idx + 1).trim();
-    if (name && value && !/^(deleted|null|undefined)$/i.test(value)) tempJar.set(name, value);
-  });
-  const respMobile = tempJar.get('c_mobile') || '';
-  const store = currentStore();
-  const existingCookie = respMobile && store[respMobile] ? store[respMobile].cookie || '' : '';
-  const merged = mergeSetCookie(existingCookie, respSetCookie);
+  const reqCookie = getHeader(reqHeaders, 'cookie') || '';
+  const merged = mergeSetCookie(reqCookie, getHeader(respHeaders, 'set-cookie'));
   if (!merged) return done({ headers: respHeaders });
   const saved = saveCapturedCookie(merged, { source: 'response-header', url });
-  if (!saved.skipped) {
-    if (saved.changed && shouldNotify()) {
-      notify(CONFIG.name, '已自动更新 cookie', saved.item && saved.item.account ? saved.item.account : url);
-    }
-  } else {
-    // cookie 缺少必要字段，给用户明确诊断
-    const jar = parseCookie(merged);
-    const missing = [];
-    if (!jar.has('t3_token') || !String(jar.get('t3_token') || '').trim()) missing.push('t3_token');
-    if (!jar.has('ecs_token') || !String(jar.get('ecs_token') || '').trim()) missing.push('ecs_token');
-    if (!jar.has('c_mobile') || !String(jar.get('c_mobile') || '').trim()) missing.push('c_mobile');
-    if (shouldNotify()) {
-      notify(CONFIG.name, 'cookie 抓取失败', '缺少 ' + missing.join('、') + '，请确认从联通 H5/App 页面抓取，且重放已关闭');
-    }
+  if (!saved.skipped && saved.changed && shouldNotify()) {
+    notify(CONFIG.name, '已自动更新 cookie', saved.item && saved.item.account ? saved.item.account : url);
   }
   done({ headers: respHeaders });
 }
